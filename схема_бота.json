@@ -1,0 +1,502 @@
+{
+  "project": "Проект 3. Telegram-бот «Калькулятор доставки»",
+  "artifact": "схема_бота.json",
+  "version": "финал — расчёт, заявка, сделка в Битрикс24 и уведомление оператору",
+  "code": {
+    "entry_point": "bot.py",
+    "cities_and_formula": "данные/cities.py",
+    "storage": "хранилище/заявки.py",
+    "data_file": "хранилище/заявки.json",
+    "crm": "crm.py — метод crm.deal.add.json на входящий вебхук Битрикс24",
+    "tests": "тесты/test_расчет.py (11) и тесты/test_уведомление.py (5) — 16 тестов на unittest",
+    "framework": "aiogram 3.7.0",
+    "fsm_storage": "MemoryStorage (состояния живут в памяти процесса)",
+    "proxy": "PROXY_URL из .env, передаётся в AiohttpSession(proxy=...)",
+    "crm_env": "BITRIX_WEBHOOK_URL; старое имя BITRIX_WEBHOOK читается как запасное",
+    "manager": "bot.py — notify_operator(): карточка заявки на MANAGER_CHAT_ID из .env после успешной сделки"
+  },
+  "legend": {
+    "node": "экран: что видит пользователь",
+    "transition": "событие, откуда и куда ведёт, что меняется",
+    "state": "FSM-состояние aiogram: какие события бот принимает",
+    "exit": "точка выхода сценария"
+  },
+  "commands_and_buttons": [
+    {
+      "id": "/start",
+      "type": "command",
+      "label": "/start",
+      "handler": "on_start",
+      "goes_to": "welcome",
+      "available_in": "любой момент",
+      "effect": "state.clear() + приветствие с меню"
+    },
+    {
+      "id": "/reset",
+      "type": "command",
+      "label": "/reset",
+      "handler": "on_reset",
+      "goes_to": "welcome",
+      "available_in": "любой момент",
+      "effect": "state.clear() + «Состояние сброшено» и меню: сброс из расчёта и формы"
+    },
+    {
+      "id": "calc_start",
+      "type": "callback",
+      "label": "Рассчитать стоимость",
+      "handler": "on_calc_start",
+      "goes_to": "ask_city",
+      "available_in": "welcome",
+      "effect": "state = waiting_city, data = {city: None, weight: None, cost: None, message_id: None}; экран меню удаляется"
+    },
+    {
+      "id": "city:<город>",
+      "type": "callback",
+      "label": "четыре кнопки городов",
+      "handler": "on_city",
+      "goes_to": "ask_weight",
+      "available_in": "ask_city (state waiting_city)",
+      "effect": "city сохранён в FSM, state = waiting_weight; экран с городами удаляется"
+    },
+    {
+      "id": "order_start",
+      "type": "callback",
+      "label": "Оформить заявку",
+      "handler": "on_order_start",
+      "goes_to": "ask_name",
+      "available_in": "welcome, result",
+      "effect": "state = waiting_name; город, вес и стоимость берутся из FSM, если до этого был расчёт"
+    },
+    {
+      "id": "menu",
+      "type": "callback",
+      "label": "В главное меню",
+      "handler": "on_menu",
+      "goes_to": "welcome",
+      "available_in": "result",
+      "effect": "state.clear() + приветствие с меню; экран результата удаляется"
+    },
+    {
+      "id": "operator_url",
+      "type": "url",
+      "label": "Связаться с оператором",
+      "handler": "—",
+      "goes_to": "внешняя ссылка OPERATOR_URL",
+      "available_in": "welcome",
+      "effect": "переход в чат оператора: https://t.me/test_operator"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "welcome",
+      "type": "экран-команда",
+      "handler": "on_start, on_reset",
+      "trigger": "/start, /reset, callback:menu",
+      "screen": "«Здравствуйте! Это бот „Калькулятор доставки“. Считаю стоимость доставки по городу и весу груза, принимаю заявки и передаю их оператору. Выберите, что нужно сделать:»",
+      "keyboard": [
+        {
+          "label": "Рассчитать стоимость",
+          "callback_data": "calc_start"
+        },
+        {
+          "label": "Оформить заявку",
+          "callback_data": "order_start"
+        },
+        {
+          "label": "Связаться с оператором",
+          "url": "OPERATOR_URL (сейчас заглушка https://t.me/ваш_ник)"
+        }
+      ],
+      "state": null
+    },
+    {
+      "id": "ask_city",
+      "type": "выбор кнопкой",
+      "handler": "on_calc_start, on_city",
+      "trigger": "calc_start",
+      "screen": "«Куда отправляем груз? Выберите город:»",
+      "keyboard": [
+        {
+          "label": "Москва",
+          "callback_data": "city:Москва"
+        },
+        {
+          "label": "Санкт-Петербург",
+          "callback_data": "city:Санкт-Петербург"
+        },
+        {
+          "label": "Новосибирск",
+          "callback_data": "city:Новосибирск"
+        },
+        {
+          "label": "Екатеринбург",
+          "callback_data": "city:Екатеринбург"
+        }
+      ],
+      "state": "CalcStates.waiting_city",
+      "fsm_data": {
+        "city": "None до выбора города",
+        "weight": "None",
+        "cost": "None",
+        "message_id": "id сообщения с кнопками городов: по нему ловится устаревшая кнопка"
+      }
+    },
+    {
+      "id": "ask_weight",
+      "type": "ввод текста",
+      "handler": "on_city, on_weight",
+      "trigger": "city:<город>",
+      "screen": "«Какой вес у груза (в килограммах)? Напишите число.»",
+      "expects": "число от 0.1 до 10000 кг, запятая как разделитель («12,5»)",
+      "keyboard": [],
+      "state": "CalcStates.waiting_weight",
+      "fsm_data": {
+        "city": "город из кнопки",
+        "weight": "None до ввода",
+        "cost": "None до расчёта"
+      }
+    },
+    {
+      "id": "result",
+      "type": "экран-выход",
+      "handler": "on_weight",
+      "trigger": "корректный вес",
+      "screen": "«Стоимость доставки в <город> для груза <вес> кг составляет: <сумма> руб.»",
+      "keyboard": [
+        {
+          "label": "Оформить заявку",
+          "callback_data": "order_start"
+        },
+        {
+          "label": "В главное меню",
+          "callback_data": "menu"
+        }
+      ],
+      "state": null,
+      "note": "state.set_state(None); город, вес и стоимость остаются в FSM — их возьмёт заявка и CRM"
+    },
+    {
+      "id": "ask_name",
+      "type": "ввод текста",
+      "handler": "on_order_start, on_order_name",
+      "trigger": "order_start",
+      "screen": "«Как вас зовут?»",
+      "expects": "текст от 2 до 64 символов",
+      "keyboard": [],
+      "state": "OrderStates.waiting_name",
+      "note": "если перед заявкой был расчёт, город и вес уже лежат в FSM"
+    },
+    {
+      "id": "ask_phone",
+      "type": "ввод текста",
+      "handler": "on_order_name, on_order_phone",
+      "trigger": "имя получено",
+      "screen": "«Ваш телефон для связи:»",
+      "expects": "текст от 5 до 30 символов",
+      "keyboard": [],
+      "state": "OrderStates.waiting_phone",
+      "fsm_data": {
+        "order_name": "имя из формы",
+        "city": "город из расчёта или None",
+        "weight": "вес из расчёта или None",
+        "cost": "стоимость из расчёта или None"
+      }
+    },
+    {
+      "id": "thanks",
+      "type": "экран-выход",
+      "handler": "on_order_phone",
+      "trigger": "телефон получен, заявка записана",
+      "screen": "«Спасибо, <имя>! Ваша заявка принята. Мы свяжемся с вами в ближайшее время»",
+      "keyboard": [],
+      "state": null,
+      "note": "перед благодарностью: save_application() → send_lead_to_bitrix() → state.clear()"
+    },
+    {
+      "id": "save_error",
+      "type": "экран ошибки",
+      "handler": "on_order_phone",
+      "trigger": "ошибка записи файла (OSError)",
+      "screen": "«Не удалось сохранить заявку: что-то сломалось на нашей стороне. Отправьте телефон ещё раз или напишите позже.»",
+      "keyboard": [],
+      "state": "OrderStates.waiting_phone",
+      "note": "состояние не сбрасывается: человек повторяет только телефон"
+    },
+    {
+      "id": "stale_button",
+      "type": "защита",
+      "handler": "on_city, on_stale",
+      "trigger": "кнопка со старого экрана или незнакомый callback",
+      "screen": "всплывающее сообщение «Эта кнопка устарела. Нажмите /start, чтобы открыть меню.»",
+      "keyboard": [],
+      "state": "не меняется",
+      "note": "message_id нажатой кнопки сверяется с message_id активного экрана"
+    },
+    {
+      "id": "bitrix_deal",
+      "type": "служебный",
+      "handler": "crm.send_lead_to_bitrix из on_order_phone",
+      "trigger": "заявка сохранена",
+      "screen": "—",
+      "effect": "POST crm.deal.add.json: TITLE «Доставка в <город в винительном падеже>» или «Новая заявка на доставку» без расчёта; OPPORTUNITY = стоимость (0 без расчёта); NAME и PHONE; COMMENTS = карточка заявки (имя, телефон, город, вес). Ошибки сети печатаются в консоль, бот не падает"
+    },
+    {
+      "id": "operator_notification",
+      "type": "служебный",
+      "handler": "notify_operator из on_order_phone",
+      "trigger": "телефон принят и send_lead_to_bitrix() вернул True",
+      "screen": "— (пользователь уведомление не видит)",
+      "effect": "message.bot.send_message на MANAGER_CHAT_ID из .env: «Новая заявка на доставку» + имя, телефон, город, вес, стоимость. Переменная не задана — пропуск с записью в лог; ошибка Telegram — предупреждение в лог, благодарность всё равно показывается"
+    }
+  ],
+  "transitions": [
+    {
+      "from": "*",
+      "event": "command:/start",
+      "to": "welcome",
+      "action": "state.clear(): незаконченный расчёт или заявка забыты"
+    },
+    {
+      "from": "*",
+      "event": "command:/reset",
+      "to": "welcome",
+      "action": "state.clear() и меню с припиской «Состояние сброшено»"
+    },
+    {
+      "from": "welcome",
+      "event": "callback:calc_start",
+      "to": "ask_city",
+      "action": "state = waiting_city, data сброшены; экран меню удаляется, показываются кнопки городов"
+    },
+    {
+      "from": "ask_city",
+      "event": "callback:city:<город из CITIES>",
+      "to": "ask_weight",
+      "action": "city сохранён в FSM, state = waiting_weight; экран с городами удаляется"
+    },
+    {
+      "from": "ask_city",
+      "event": "callback:city:<города нет в справочнике>",
+      "to": "тот же экран",
+      "action": "всплывающее «Такого города нет, выберите заново», состояние не меняется"
+    },
+    {
+      "from": "ask_weight",
+      "event": "текст-число от 0.1 до 10000",
+      "to": "result",
+      "action": "calculate_cost(city, weight); state.set_state(None); city, weight и cost сохранены в FSM"
+    },
+    {
+      "from": "ask_weight",
+      "event": "не число, 0 или больше 10000",
+      "to": "тот же экран",
+      "action": "подсказка «Вес не поняла: нужен груз от 0.1 до 10000 кг», состояние не меняется"
+    },
+    {
+      "from": "welcome | result",
+      "event": "callback:order_start",
+      "to": "ask_name",
+      "action": "state = waiting_name; город и вес берутся из FSM, если был расчёт"
+    },
+    {
+      "from": "order_start | ask_name",
+      "event": "текст 2-64 символа",
+      "to": "ask_phone",
+      "action": "order_name сохранён, state = waiting_phone"
+    },
+    {
+      "from": "ask_name",
+      "event": "текст короче 2 или длиннее 64 символов",
+      "to": "тот же экран",
+      "action": "подсказка про имя от 2 до 64 символов"
+    },
+    {
+      "from": "ask_phone",
+      "event": "текст 5-30 символов",
+      "to": "thanks | save_error",
+      "action": "save_application(); send_lead_to_bitrix(...) → True: notify_operator() и state.clear(); False: сделки нет и уведомление не уходит; OSError — подсказка и повтор телефона"
+    },
+    {
+      "from": "ask_phone",
+      "event": "телефон короче 5 или длиннее 30 символов",
+      "to": "тот же экран",
+      "action": "подсказка про телефон от 5 до 30 символов"
+    },
+    {
+      "from": "ask_weight | ask_name | ask_phone",
+      "event": "любая команда (текст начинается с «/»)",
+      "to": "welcome",
+      "action": "exit_form_on_command(): команда важнее шага, состояние очищается, в поле она не попадает"
+    },
+    {
+      "from": "result",
+      "event": "callback:menu",
+      "to": "welcome",
+      "action": "state.clear(); экран результата удаляется, показывается меню"
+    },
+    {
+      "from": "ask_city | ask_weight",
+      "event": "кнопка со старого сообщения",
+      "to": "stale_button",
+      "action": "всплывающее «Эта кнопка устарела…», город не меняется"
+    },
+    {
+      "from": "operator_notification",
+      "event": "уведомление отправлено или пропущено (нет MANAGER_CHAT_ID)",
+      "to": "thanks",
+      "action": "ошибка уведомления не мешает благодарности: причина в лог"
+    }
+  ],
+  "states": [
+    {
+      "state": "CalcStates.waiting_city",
+      "entered_from": "welcome (calc_start)",
+      "accepts": "callback city:<город>",
+      "data": {
+        "city": "None",
+        "weight": "None",
+        "cost": "None",
+        "message_id": "id экрана с кнопками городов"
+      },
+      "exits": "ask_weight (город выбран), ask_city (устаревшая кнопка или неизвестный город), welcome (/start, /reset)"
+    },
+    {
+      "state": "CalcStates.waiting_weight",
+      "entered_from": "ask_city (city:<город>)",
+      "accepts": "любой текст: parse_weight() принимает число и запятую",
+      "data": {
+        "city": "название города",
+        "weight": "None до ввода",
+        "cost": "None до расчёта",
+        "message_id": "id экрана с городами (уже неактивен)"
+      },
+      "exits": "result (корректный вес), ask_weight (подсказка), welcome (/start, /reset)"
+    },
+    {
+      "state": "OrderStates.waiting_name",
+      "entered_from": "welcome | result (order_start)",
+      "accepts": "любой текст",
+      "data": {
+        "order_name": "None до ввода",
+        "city": "город из расчёта или None",
+        "weight": "вес из расчёта или None",
+        "cost": "стоимость из расчёта или None"
+      },
+      "exits": "ask_phone (имя 2-64), ask_name (подсказка), welcome (/start, /reset)"
+    },
+    {
+      "state": "OrderStates.waiting_phone",
+      "entered_from": "ask_name",
+      "accepts": "любой текст",
+      "data": {
+        "order_name": "имя из формы",
+        "city": "город из расчёта или None",
+        "weight": "вес из расчёта или None",
+        "cost": "стоимость из расчёта или None"
+      },
+      "exits": "thanks (заявка записана и ушла в CRM), save_error (ошибка записи), ask_phone (подсказка), welcome (/start, /reset)"
+    }
+  ],
+  "exits": [
+    {
+      "id": "cost_calculated",
+      "type": "результат расчёта",
+      "node": "result",
+      "result": "Стоимость по формуле: 500 руб. + вес × 100 руб. + надбавка города (Москва 500, Санкт-Петербург 300, Новосибирск 200, Екатеринбург 150)",
+      "state_after": "очищено; город, вес и стоимость остались в FSM для заявки"
+    },
+    {
+      "id": "application_saved",
+      "type": "сохранение заявки",
+      "node": "thanks",
+      "result": "Запись {timestamp, user_id, name, phone, city, weight} дописывается в хранилище/заявки.json (indent=4, кириллица читаемая); файл пишется через временный",
+      "state_after": "очищено"
+    },
+    {
+      "id": "deal_in_crm",
+      "type": "сделка в Битрикс24",
+      "node": "bitrix_deal",
+      "result": "Сделка crm.deal.add: TITLE «Доставка в Москву» (падеж из словаря PADEZH) или «Новая заявка на доставку», OPPORTUNITY = стоимость, NAME и PHONE, COMMENTS = карточка заявки",
+      "state_after": "не меняется"
+    },
+    {
+      "id": "reset",
+      "type": "сброс",
+      "node": "welcome",
+      "result": "Незаконченный расчёт или начатая заявка отменены, бот вернулся в приветствие",
+      "state_after": "очищено"
+    },
+    {
+      "id": "save_error",
+      "type": "ветка ошибки, не выход",
+      "node": "save_error",
+      "result": "Человек видит «Не удалось сохранить заявку…» и повторяет телефон, не заполняя форму заново",
+      "state_after": "OrderStates.waiting_phone сохраняется"
+    },
+    {
+      "id": "operator_notified",
+      "type": "уведомление оператору",
+      "node": "operator_notification",
+      "result": "Оператор получает карточку заявки: имя, телефон, город, вес, стоимость",
+      "state_after": "очищено"
+    }
+  ],
+  "data": {
+    "cities": {
+      "count": 4,
+      "surcharges": {
+        "Москва": 500,
+        "Санкт-Петербург": 300,
+        "Новосибирск": 200,
+        "Екатеринбург": 150
+      },
+      "file": "данные/cities.py"
+    },
+    "formula": {
+      "expression": "BASE_RATE + вес × RATE_PER_KG + надбавка города",
+      "base_rate": 500,
+      "rate_per_kg": 100,
+      "result": "целое число рублей (int(round(...)))"
+    },
+    "weight": {
+      "min": 0.1,
+      "max": 10000,
+      "accepted_input": "число с точкой или запятой, пробелы игнорируются",
+      "error_text": "Вес не поняла: нужен груз от 0.1 до 10000 кг"
+    },
+    "application": {
+      "fields": [
+        "timestamp",
+        "user_id",
+        "name",
+        "phone",
+        "city",
+        "weight"
+      ],
+      "file": "хранилище/заявки.json"
+    },
+    "crm": {
+      "method": "crm.deal.add.json",
+      "title_padezh": {
+        "Москва": "Москву",
+        "Санкт-Петербург": "Санкт-Петербург",
+        "Новосибирск": "Новосибирск",
+        "Екатеринбург": "Екатеринбург"
+      },
+      "fields": [
+        "TITLE",
+        "OPPORTUNITY",
+        "NAME",
+        "PHONE",
+        "COMMENTS"
+      ],
+      "webhook_env": "BITRIX_WEBHOOK_URL"
+    },
+    "manager": {
+      "env": "MANAGER_CHAT_ID",
+      "ru": "Telegram-id оператора, свой id показывает @userinfobot",
+      "skipped": "переменная не задана — уведомление пропускается",
+      "message": "Новая заявка на доставку / Имя / Телефон / Город / Вес / Стоимость; без расчёта город, вес и стоимость — прочерк"
+    }
+  }
+}
