@@ -66,21 +66,24 @@ def save_application(
     user_id: int,
     name: str,
     phone: str,
+    origin: str | None,
     city: str | None,
     weight: float | None,
 ) -> dict:
     """Дописывает заявку в хранилище/заявки.json и возвращает её запись.
 
-    user_id — Telegram-id автора заявки, city и weight — город и вес
-    из расчёта. Если заявка оформлена без расчёта, они None. Время
-    ставится сразу в ISO 8601. Файл переписывается через временный:
-    если запись прервётся, старый файл останется целым.
+    user_id — Telegram-id автора заявки, origin и city — города
+    отправления и назначения из расчёта, weight — вес груза. Если
+    заявка оформлена без расчёта, они None. Время ставится сразу в
+    ISO 8601. Файл переписывается через временный: если запись
+    прервётся, старый файл останется целым.
     """
     application = {
         "timestamp": current_timestamp(),
         "user_id": user_id,
         "name": name,
         "phone": phone,
+        "origin": origin,
         "city": city,
         "weight": weight,
     }

@@ -1,7 +1,8 @@
-"""Telegram-бот «Калькулятор доставки».
+﻿"""Telegram-бот «Калькулятор доставки».
 
 Учебный проект №3 Zerocoder, полная логика. Меню из трёх пунктов:
-«Рассчитать стоимость» (город и вес, формула из данных/cities.py),
+«Рассчитать стоимость» (города отправления и назначения, вес,
+формула из данных/cities.py),
 «Оформить заявку» (имя и телефон, заявка в хранилище/заявки.json,
 реальная отправка в Битрикс24 через crm.py)
 и «Связаться с оператором» (URL-кнопка, заглушка).
@@ -45,6 +46,7 @@ from данные.cities import (
     CITIES,
     MAX_WEIGHT,
     MIN_WEIGHT,
+    ORIGIN_RATES,
     calculate_cost,
 )
 from хранилище.заявки import save_application
@@ -60,12 +62,17 @@ NETWORK_ERRORS: tuple[type[BaseException], ...] = (
 
 WELCOME_TEXT = (
     "Здравствуйте! Это бот «Калькулятор доставки».\n\n"
-    "Считаю стоимость доставки по городу и весу груза, "
-    "принимаю заявки и передаю их оператору.\n\n"
+    "Считаю стоимость доставки по городам отправления и назначения "
+    "и весу груза, принимаю заявки и передаю их оператору.\n\n"
     "Выберите, что нужно сделать:"
 )
 
-ASK_CITY_TEXT = "Куда отправляем груз? Выберите город:"
+ASK_ORIGIN_TEXT = "Откуда везём груз? Выберите город отправления:"
+ASK_CITY_TEXT = "Куда везём груз? Выберите город назначения:"
+CITY_LOST_TEXT = (
+    "Не вижу город отправления или назначения. "
+    "Начнём заново: нажмите /start и выберите города кнопками."
+)
 ASK_WEIGHT_TEXT = "Какой вес у груза (в килограммах)? Напишите число."
 WEIGHT_ERROR_TEXT = (
     f"Вес не поняла: нужен груз от {MIN_WEIGHT} до {MAX_WEIGHT} кг. "
@@ -95,27 +102,33 @@ SAVE_ERROR_TEXT = (
 
 STALE_TEXT = "Эта кнопка устарела. Нажмите /start, чтобы открыть меню."
 
-# URL-кнопка «Связаться с оператором»: ник Ларисы.
+# URL-кнопка «Связаться с оператором»: ник оператора.
 # Заменить на реальный ник оператора, если заявки ведёт другой человек.
-OPERATOR_URL = "https://t.me/test_operator"
+OPERATOR_URL = "https://t.me/Lilysa24"
 
 
-def result_text(city: str, weight: float, cost: int) -> str:
-    """Текст результата расчёта: город, вес и итоговая сумма.
+def result_text(
+    origin: str,
+    destination: str,
+    weight: float,
+    cost: int,
+) -> str:
+    """Текст результата: откуда и куда везём, вес и итоговая сумма.
 
     Стоимость приходит готовой: та же цифра уходит в FSM и в CRM,
     чтобы в сообщении и в сделке была одна и та же сумма.
     """
     return (
-        f"Стоимость доставки в {city} для груза {weight} кг "
-        f"составляет: {cost} руб."
+        f"Стоимость доставки {origin} → {destination} "
+        f"для груза {weight:g} кг составляет: {cost} руб."
     )
 
 
 # --- Состояния ---------------------------------------------------------------
 class CalcStates(StatesGroup):
-    """Расчёт стоимости: город и вес груза."""
+    """Расчёт стоимости: откуда везём, куда везём и вес груза."""
 
+    waiting_origin = State()
     waiting_city = State()
     waiting_weight = State()
 
@@ -154,13 +167,18 @@ def menu_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def cities_keyboard() -> InlineKeyboardMarkup:
-    """Кнопки городов для расчёта: callback_data = city:<название>."""
+def cities_keyboard(prefix: str = "city") -> InlineKeyboardMarkup:
+    """Кнопки городов: callback_data = <prefix>:<название>.
+
+    prefix="origin" — шаг «Откуда везём?», prefix="city" — шаг
+    «Куда везём?». По префиксу обработчик понимает, какой город
+    выбрали: отправления или назначения.
+    """
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text=city, callback_data=f"city:{city}"
+                    text=city, callback_data=f"{prefix}:{city}"
                 )
             ]
             for city in CITIES
@@ -206,13 +224,14 @@ async def safe_delete(message: Message) -> None:
 def operator_notice(
     name: str,
     phone: str,
-    city: str | None,
+    origin: str | None,
+    destination: str | None,
     weight: float | None,
     cost: int | None,
 ) -> str:
     """Текст уведомления оператору о новой заявке.
 
-    Город, вес и стоимость показываются прочерком, если заявку оформили
+    Города, вес и стоимость показываются прочерком, если заявку оформили
     без расчёта: уведомление должно дойти в любом случае, а не упасть
     на подстановке None.
     """
@@ -220,7 +239,8 @@ def operator_notice(
         "Новая заявка на доставку\n\n"
         f"Имя: {name}\n"
         f"Телефон: {phone}\n"
-        f"Город: {city or '-'}\n"
+        f"Откуда: {origin or '-'}\n"
+        f"Куда: {destination or '-'}\n"
         f"Вес: {weight if weight is not None else '-'} кг\n"
         f"Стоимость: {cost if cost is not None else '-'} руб."
     )
@@ -230,7 +250,8 @@ async def notify_operator(
     message: Message,
     name: str,
     phone: str,
-    city: str | None,
+    origin: str | None,
+    destination: str | None,
     weight: float | None,
     cost: int | None,
 ) -> None:
@@ -251,7 +272,7 @@ async def notify_operator(
     try:
         await message.bot.send_message(
             manager_chat_id,
-            operator_notice(name, phone, city, weight, cost),
+            operator_notice(name, phone, origin, destination, weight, cost),
         )
         logging.info("Уведомление оператору отправлено: %s", manager_chat_id)
     except (
@@ -313,25 +334,58 @@ async def exit_form_on_command(
 
 # --- Расчёт стоимости --------------------------------------------------------
 async def on_calc_start(callback: CallbackQuery, state: FSMContext) -> None:
-    """«Рассчитать стоимость»: показываем кнопки городов."""
+    """«Рассчитать стоимость»: спрашиваем, откуда везём груз."""
     if callback.message is None:
         await callback.answer("Сообщение устарело, отправьте /start")
         return
 
-    await state.set_state(CalcStates.waiting_city)
+    await state.set_state(CalcStates.waiting_origin)
     await state.set_data(
-        {"city": None, "weight": None, "cost": None, "message_id": None}
+        {
+            "origin": None,
+            "city": None,
+            "weight": None,
+            "cost": None,
+            "message_id": None,
+        }
     )
     await safe_delete(callback.message)
     sent = await callback.message.answer(
-        ASK_CITY_TEXT, reply_markup=cities_keyboard()
+        ASK_ORIGIN_TEXT, reply_markup=cities_keyboard("origin")
+    )
+    await state.update_data(message_id=sent.message_id)
+    await callback.answer()
+
+
+async def on_origin(callback: CallbackQuery, state: FSMContext) -> None:
+    """Выбор города отправления: сохраняем и спрашиваем, куда везём."""
+    if callback.message is None:
+        await callback.answer("Сообщение устарело, отправьте /start")
+        return
+
+    data = await state.get_data()
+    # Кнопка со старого экрана: её id уже не совпадает с текущим.
+    if callback.message.message_id != data.get("message_id"):
+        await callback.answer(STALE_TEXT, show_alert=True)
+        return
+
+    origin = callback.data.split(":", 1)[1]
+    if origin not in ORIGIN_RATES:
+        await callback.answer("Такого города нет, выберите заново")
+        return
+
+    await state.update_data(origin=origin)
+    await state.set_state(CalcStates.waiting_city)
+    await safe_delete(callback.message)
+    sent = await callback.message.answer(
+        ASK_CITY_TEXT, reply_markup=cities_keyboard("city")
     )
     await state.update_data(message_id=sent.message_id)
     await callback.answer()
 
 
 async def on_city(callback: CallbackQuery, state: FSMContext) -> None:
-    """Выбор города: сохраняем его и спрашиваем вес груза."""
+    """Выбор города назначения: сохраняем его и спрашиваем вес груза."""
     if callback.message is None:
         await callback.answer("Сообщение устарело, отправьте /start")
         return
@@ -365,14 +419,36 @@ async def on_weight(message: Message, state: FSMContext) -> None:
         return
 
     data = await state.get_data()
-    city = data.get("city", "")
-    cost = calculate_cost(city, weight)
+    origin = data.get("origin")
+    city = data.get("city")
+    # Страховка: если города потерялись (например, диалог начался
+    # до правки сценария), начинаем расчёт заново, а не падаем.
+    if origin not in ORIGIN_RATES or city not in CITIES:
+        await state.set_state(CalcStates.waiting_origin)
+        await state.set_data(
+            {
+                "origin": None,
+                "city": None,
+                "weight": None,
+                "cost": None,
+                "message_id": None,
+            }
+        )
+        sent = await message.answer(
+            CITY_LOST_TEXT, reply_markup=cities_keyboard("origin")
+        )
+        await state.update_data(message_id=sent.message_id)
+        return
+
+    cost = calculate_cost(origin, city, weight)
     await state.set_state(None)
-    # Город, вес и стоимость оставляем в FSM: их возьмёт заявка, если
+    # Города, вес и стоимость оставляем в FSM: их возьмёт заявка, если
     # пользователь нажмёт «Оформить заявку» под результатом.
-    await state.update_data(city=city, weight=weight, cost=cost)
+    await state.update_data(
+        origin=origin, city=city, weight=weight, cost=cost
+    )
     await message.answer(
-        result_text(city, weight, cost),
+        result_text(origin, city, weight, cost),
         reply_markup=result_keyboard(),
     )
 
@@ -395,8 +471,8 @@ async def on_menu(callback: CallbackQuery, state: FSMContext) -> None:
 async def on_order_start(callback: CallbackQuery, state: FSMContext) -> None:
     """«Оформить заявку» (из меню или под результатом): просим имя.
 
-    Город и вес берутся из FSM, если перед заявкой был расчёт;
-    если заявка оформляется сразу из меню, их не будет (None).
+    Города, вес и стоимость берутся из FSM, если перед заявкой был
+    расчёт; если заявка оформляется сразу из меню, их не будет (None).
     """
     if callback.message is None:
         await callback.answer("Сообщение устарело, отправьте /start")
@@ -435,8 +511,9 @@ async def on_order_phone(message: Message, state: FSMContext) -> None:
 
     data = await state.get_data()
     name = data.get("order_name", "")
-    # Заявка может быть оформлена без расчёта: тогда города, веса и
+    # Заявка может быть оформлена без расчёта: тогда городов, веса и
     # стоимости нет — в CRM уйдёт 0 руб. и нейтральное название сделки.
+    origin = data.get("origin")
     city = data.get("city")
     weight = data.get("weight")
     cost = data.get("cost")
@@ -446,6 +523,7 @@ async def on_order_phone(message: Message, state: FSMContext) -> None:
             user_id=message.from_user.id,
             name=name,
             phone=phone,
+            origin=origin,
             city=city,
             weight=weight,
         )
@@ -460,10 +538,12 @@ async def on_order_phone(message: Message, state: FSMContext) -> None:
     # True — Битрикс24 создал сделку; по этому признаку уходит уведомление
     # оператору, чтобы за одну заявку оно не отправлялось повторно.
     deal_created = send_lead_to_bitrix(
-        name, phone, city, weight, cost=cost
+        name, phone, origin, city, weight, cost=cost
     )
     if deal_created:
-        await notify_operator(message, name, phone, city, weight, cost)
+        await notify_operator(
+            message, name, phone, origin, city, weight, cost
+        )
 
     await state.clear()
     await message.answer(THANKS_TEXT.format(name=html.escape(name)))
@@ -485,6 +565,11 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.message.register(on_start, CommandStart())
     dp.message.register(on_reset, Command("reset"))
     dp.callback_query.register(on_calc_start, F.data == "calc_start")
+    dp.callback_query.register(
+        on_origin,
+        StateFilter(CalcStates.waiting_origin),
+        F.data.startswith("origin:"),
+    )
     dp.callback_query.register(
         on_city,
         StateFilter(CalcStates.waiting_city),

@@ -1,7 +1,8 @@
 """Тесты уведомления оператору о новой заявке.
 
 Проверяем без сети и без Telegram:
-- текст уведомления содержит имя, телефон, город, вес и стоимость;
+- текст уведомления содержит имя, телефон, откуда и куда везём,
+  вес и стоимость;
 - заявка без расчёта показывает прочерки вместо None;
 - без MANAGER_CHAT_ID уведомление не отправляется и бот не падает;
 - с MANAGER_CHAT_ID сообщение уходит на этот id;
@@ -44,13 +45,19 @@ class OperatorNoticeTextTestCase(unittest.TestCase):
 
     def test_full_booking_contains_all_fields(self):
         text = bot_module.operator_notice(
-            "Иван", "+7 900 000-00-00", "Москва", 12.5, 2250
+            "Иван",
+            "+7 900 000-00-00",
+            "Москва",
+            "Санкт-Петербург",
+            12.5,
+            2250,
         )
         for expected in (
             "Новая заявка на доставку",
             "Имя: Иван",
             "Телефон: +7 900 000-00-00",
-            "Город: Москва",
+            "Откуда: Москва",
+            "Куда: Санкт-Петербург",
             "Вес: 12.5 кг",
             "Стоимость: 2250 руб.",
         ):
@@ -59,9 +66,10 @@ class OperatorNoticeTextTestCase(unittest.TestCase):
 
     def test_booking_without_calc_shows_dashes(self):
         text = bot_module.operator_notice(
-            "Иван", "+7 900 000-00-00", None, None, None
+            "Иван", "+7 900 000-00-00", None, None, None, None
         )
-        self.assertIn("Город: -", text)
+        self.assertIn("Откуда: -", text)
+        self.assertIn("Куда: -", text)
         self.assertIn("Вес: - кг", text)
         self.assertIn("Стоимость: - руб.", text)
         self.assertNotIn("None", text)
@@ -76,7 +84,13 @@ class NotifyOperatorTestCase(unittest.IsolatedAsyncioTestCase):
             os.environ, {"MANAGER_CHAT_ID": ""}, clear=False
         ):
             await bot_module.notify_operator(
-                message, "Иван", "+7 900 000-00-00", "Москва", 12.5, 2250
+                message,
+                "Иван",
+                "+7 900 000-00-00",
+                "Москва",
+                "Санкт-Петербург",
+                12.5,
+                2250,
             )
         self.assertEqual(message.bot.sent, [])
 
@@ -86,12 +100,19 @@ class NotifyOperatorTestCase(unittest.IsolatedAsyncioTestCase):
             os.environ, {"MANAGER_CHAT_ID": "1284467730"}, clear=False
         ):
             await bot_module.notify_operator(
-                message, "Иван", "+7 900 000-00-00", "Москва", 12.5, 2250
+                message,
+                "Иван",
+                "+7 900 000-00-00",
+                "Москва",
+                "Санкт-Петербург",
+                12.5,
+                2250,
             )
         self.assertEqual(len(message.bot.sent), 1)
         chat_id, text = message.bot.sent[0]
         self.assertEqual(chat_id, "1284467730")
-        self.assertIn("Город: Москва", text)
+        self.assertIn("Откуда: Москва", text)
+        self.assertIn("Куда: Санкт-Петербург", text)
         self.assertIn("Стоимость: 2250 руб.", text)
 
 
@@ -107,7 +128,12 @@ class CrmStatusTestCase(unittest.TestCase):
         with mock.patch.dict(os.environ, environment, clear=True):
             with mock.patch("builtins.print"):
                 result = send_lead_to_bitrix(
-                    "Иван", "+7 900 000-00-00", "Москва", 12.5, 2250
+                    "Иван",
+                    "+7 900 000-00-00",
+                    "Москва",
+                    "Санкт-Петербург",
+                    12.5,
+                    2250,
                 )
         self.assertFalse(result)
 
